@@ -38,7 +38,7 @@ defmodule Fathom.MixProject do
     [
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url},
-      files: ~w(lib priv mix.exs README.md LICENSE)
+      files: ~w(lib mix.exs README.md LICENSE)
     ]
   end
 
