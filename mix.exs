@@ -16,7 +16,9 @@ defmodule Fathom.MixProject do
           "and dumps symbols, call graphs and framework facts into SQLite for agents to query.",
       package: package(),
       docs: docs(),
-      elixirc_paths: elixirc_paths(Mix.env())
+      elixirc_paths: elixirc_paths(Mix.env()),
+      dialyzer: dialyzer(),
+      aliases: aliases()
     ]
   end
 
@@ -30,7 +32,11 @@ defmodule Fathom.MixProject do
   defp deps do
     [
       {:exqlite, "~> 0.27"},
-      {:ex_doc, "~> 0.34", only: :dev, runtime: false}
+      {:ex_doc, "~> 0.34", only: :dev, runtime: false},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:ex_slop, "~> 0.4", only: [:dev, :test], runtime: false},
+      {:ex_dna, "~> 1.5", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
   end
 
@@ -44,5 +50,25 @@ defmodule Fathom.MixProject do
 
   defp docs do
     [main: "readme", source_url: @source_url, extras: ["README.md"]]
+  end
+
+  # Everything that has to pass before a change lands. Credo runs ExSlop's
+  # checks as a plugin; see `.credo.exs`.
+  defp aliases do
+    [quality: ["format --check-formatted", "credo --strict", "ex_dna", "dialyzer"]]
+  end
+
+  # The PLT is keyed on the toolchain, and Fathom is already sensitive to which
+  # OTP built it, so keep it out of the shared build directory.
+  defp dialyzer do
+    [
+      plt_local_path: "priv/plts",
+      plt_core_path: "priv/plts",
+      # Mix is not in the default PLT, and this project is mostly Mix tasks;
+      # without it every `Mix.shell/0` reads as a call to a function that does
+      # not exist.
+      plt_add_apps: [:mix, :ex_unit],
+      flags: [:error_handling, :underspecs, :unmatched_returns]
+    ]
   end
 end

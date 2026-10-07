@@ -50,7 +50,7 @@ defmodule Fathom do
                :ok <- Sqlite3.bind(stmt, params),
                {:ok, columns} <- Sqlite3.columns(conn, stmt),
                {:ok, rows} <- Sqlite3.fetch_all(conn, stmt) do
-            Sqlite3.release(conn, stmt)
+            :ok = Sqlite3.release(conn, stmt)
             {:ok, columns, rows}
           end
         after

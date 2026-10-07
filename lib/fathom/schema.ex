@@ -157,6 +157,35 @@ defmodule Fathom.Schema do
      ]}
   ]
 
+  # Which column holds the module a row belongs to, for every table that is
+  # owned by one. This is what makes an incremental build possible: the unit
+  # the compiler recompiles is a module, so the unit the database deletes has
+  # to be a module too.
+  #
+  # `meta` is absent because it describes the build rather than any module.
+  # `impls` is keyed on the implementation module (`Describable.User`), which
+  # is itself a compiled module, so it is deleted with the file that defines
+  # it rather than with the protocol or the type.
+  @module_columns %{
+    modules: "module",
+    functions: "module",
+    calls: "caller_module",
+    dynamic_sites: "caller_module",
+    struct_uses: "caller_module",
+    alias_refs: "caller_module",
+    use_sites: "module",
+    compile_envs: "caller_module",
+    behaviours: "module",
+    callbacks: "module",
+    types: "module",
+    impls: "module",
+    schemas: "module",
+    schema_fields: "module",
+    schema_assocs: "module",
+    routes: "router",
+    module_deps: "from_module"
+  }
+
   @indexes [
     "CREATE INDEX idx_functions_module ON functions(module)",
     "CREATE INDEX idx_functions_name ON functions(name)",
@@ -202,6 +231,32 @@ defmodule Fathom.Schema do
   building them once over finished tables.
   """
   def create_index_statements, do: @indexes
+
+  # A table added without a matching entry above would silently keep its rows
+  # across an incremental build, which is the worst kind of staleness: a
+  # database that looks complete and is not. Catch it at compile time instead.
+  @uncovered Enum.map(@tables, &elem(&1, 0)) -- [:meta | Map.keys(@module_columns)]
+  if @uncovered != [] do
+    raise "tables with no entry in @module_columns: #{inspect(@uncovered)}"
+  end
+
+  @doc """
+  Tables owned by a module, as `{table, module_column}` pairs.
+
+  Every table except `meta` belongs to exactly one module, though not all of
+  them name that column the same way.
+  """
+  def module_scoped_tables, do: Map.to_list(@module_columns)
+
+  @doc """
+  A `DELETE` removing every row a module owns from `table`.
+
+  Parameterised on the module name, so one prepared statement serves every
+  module in a rebuild.
+  """
+  def delete_by_module_statement(table) do
+    "DELETE FROM #{table} WHERE #{Map.fetch!(@module_columns, table)} = ?"
+  end
 
   @doc "A parameterised `INSERT` for a table, with one placeholder per column."
   def insert_statement(table) do

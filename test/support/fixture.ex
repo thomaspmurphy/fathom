@@ -16,24 +16,60 @@ defmodule Fathom.Fixture do
   def db_path, do: @db_path
 
   @doc "Compiles the sample app under the tracer and writes its database."
-  def build! do
+  def build!(dir \\ @app_dir, args \\ []) do
     {output, status} =
-      System.cmd("mix", ["fathom.build", "--quiet"],
-        cd: @app_dir,
+      System.cmd("mix", ["fathom.build", "--quiet" | args],
+        cd: dir,
         stderr_to_stdout: true,
         env: [{"MIX_ENV", "dev"}]
       )
 
     if status != 0 do
-      raise "fathom.build failed in the fixture app:\n\n#{output}"
+      raise "fathom.build failed in #{dir}:\n\n#{output}"
     end
 
     :ok
   end
 
+  @doc """
+  Copies the sample app to a temporary directory and calls `fun` with its path.
+
+  An incremental build can only be tested by changing source between two
+  builds. Editing `fixtures/sample_app` in place would leave the checkout
+  dirty whenever a test failed before it could put the file back, so the edits
+  go to a throwaway copy instead.
+  """
+  def in_sandbox(fun) do
+    dir = Path.join(System.tmp_dir!(), "fathom-sandbox-#{System.unique_integer([:positive])}")
+
+    try do
+      File.cp_r!(@app_dir, dir)
+      File.rm_rf!(Path.join(dir, ".fathom"))
+      repoint_fathom(dir)
+      fun.(dir)
+    after
+      File.rm_rf!(dir)
+    end
+  end
+
+  # The fixture depends on Fathom through a relative path, which stops
+  # resolving the moment the copy leaves the repository.
+  defp repoint_fathom(dir) do
+    mix_exs = Path.join(dir, "mix.exs")
+    root = Path.expand("../..", @app_dir)
+
+    File.write!(
+      mix_exs,
+      String.replace(File.read!(mix_exs), ~s(path: "../.."), ~s(path: "#{root}"))
+    )
+  end
+
   @doc "Runs a query and returns rows as lists."
-  def query(sql, args \\ []) do
-    {:ok, conn} = Sqlite3.open(@db_path, mode: :readonly)
+  def query(sql, args \\ []), do: query_at(@db_path, sql, args)
+
+  @doc "Runs a query against a database somewhere other than the fixture's own."
+  def query_at(db_path, sql, args \\ []) do
+    {:ok, conn} = Sqlite3.open(db_path, mode: :readonly)
 
     try do
       {:ok, stmt} = Sqlite3.prepare(conn, sql)

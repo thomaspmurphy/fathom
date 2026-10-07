@@ -29,3 +29,6 @@ fixtures/*/_build/
 fixtures/*/deps/
 fixtures/*/.fathom/
 fixtures/*/AGENTS.md
+
+# Dialyzer PLTs
+/priv/plts/

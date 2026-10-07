@@ -14,6 +14,8 @@ defmodule Mix.Tasks.Fathom.Build do
 
     * `--output`, `-o` - where to write the database. Defaults to
       `.fathom/program.db`.
+    * `--incremental` - update an existing database in place rather than
+      rebuilding it. See below.
     * `--no-compile` - reuse the facts from an already-running build. Only
       useful when embedding this task in a larger pipeline.
     * `--quiet` - suppress the summary.
@@ -24,6 +26,22 @@ defmodule Mix.Tasks.Fathom.Build do
   produce a database covering whichever files happened to be stale, so the
   default is a full `--force` compile into a separate build directory
   (`_build/$MIX_ENV-fathom`) that leaves your normal build artefacts alone.
+
+  ## Incremental builds
+
+  `--incremental` drops `--force` and lets the compiler decide what is stale.
+  Whatever it recompiles is what the tracer sees, and those modules are the
+  ones whose rows are replaced; modules whose BEAM file has gone are purged.
+  The database is updated in place inside one transaction.
+
+  This is opt-in because it is an approximation, and in one direction only.
+  The compiler recompiles a module when its *compile-time* dependencies
+  change, so a caller that merely calls a changed function at runtime is not
+  recompiled, and its rows stay as they were. Rename a function and the calls
+  to it from another module will still name the old one until something
+  forces that module to rebuild. A full build is always correct; this one is
+  fast. Run `mix fathom.build` without the flag when the answer has to be
+  right.
   """
 
   use Mix.Task
@@ -32,7 +50,7 @@ defmodule Mix.Tasks.Fathom.Build do
 
   @default_output ".fathom/program.db"
 
-  @switches [output: :string, compile: :boolean, quiet: :boolean]
+  @switches [output: :string, compile: :boolean, quiet: :boolean, incremental: :boolean]
   @aliases [o: :output]
 
   @impl Mix.Task
@@ -43,26 +61,48 @@ defmodule Mix.Tasks.Fathom.Build do
     root = File.cwd!()
     started = System.monotonic_time(:millisecond)
 
+    # There is nothing to update into on the first run, so the flag quietly
+    # means "full build" until a database exists.
+    incremental? = Keyword.get(opts, :incremental, false) and File.exists?(output)
+
     Facts.init()
 
-    if Keyword.get(opts, :compile, true), do: compile!()
+    # The recompiled set comes straight back out of the compile step. Reading
+    # it later would mean reading it after some other pass had buffered facts
+    # of its own, at which point every module looks as though it had been
+    # recompiled.
+    recompiled =
+      if Keyword.get(opts, :compile, true),
+        do: compile!(incremental?),
+        else: Facts.partitions()
 
-    modules = Introspect.project_modules()
-    Introspect.run(modules)
+    live = Introspect.project_modules()
+
+    # A full build reflects over the whole project; an incremental one only
+    # over what was recompiled, since the rows for everything else are staying
+    # exactly where they are.
+    Introspect.run(if incremental?, do: recompiled, else: live)
 
     meta = %{
       project: Mix.Project.config()[:app],
       mix_env: Mix.env(),
-      module_count: length(modules),
+      module_count: length(live),
       source_root: root
     }
 
-    {:ok, counts} = Store.write(output, root, meta)
+    result =
+      if incremental? do
+        Store.update(output, root, %{recompiled: recompiled, live: live}, meta)
+      else
+        Store.write(output, root, meta)
+      end
+
     Facts.destroy()
 
     elapsed = System.monotonic_time(:millisecond) - started
-    unless opts[:quiet], do: report(output, counts, elapsed)
-    warn_if_untraced(counts)
+    unless opts[:quiet], do: report(result, output, elapsed)
+
+    unless incremental?, do: warn_if_untraced(elem(result, 1))
 
     :ok
   end
@@ -113,29 +153,49 @@ defmodule Mix.Tasks.Fathom.Build do
   # unreachable mid-compile and takes the build down with it.
   @tracer_modules [Fathom.Tracer, Fathom.Dynamic, Fathom.Facts]
 
-  defp compile! do
+  defp compile!(incremental?) do
     Enum.each(@tracer_modules, &Code.ensure_loaded!/1)
     Enum.each(@compilers, &Mix.Task.reenable/1)
 
-    Mix.Task.run("compile", [
-      "--force",
-      "--no-prune-code-paths",
-      "--tracer",
-      "Fathom.Tracer"
-    ])
+    args = ["--no-prune-code-paths", "--tracer", "Fathom.Tracer"]
+
+    # Dropping `--force` is the whole of the incremental build on this side:
+    # the compiler's own staleness tracking decides what gets re-traced.
+    Mix.Task.run("compile", if(incremental?, do: args, else: ["--force" | args]))
+
+    # Whatever the tracer buffered is exactly what the compiler recompiled.
+    Facts.partitions()
   end
 
-  defp report(output, counts, elapsed) do
-    total = counts |> Map.values() |> Enum.sum()
+  # An incremental build that recompiled nothing is the common case once the
+  # database is warm, and it is not the same thing as a build that failed to
+  # trace anything.
+  defp report({:ok, counts, []}, output, elapsed) when map_size(counts) == 0 do
+    Mix.shell().info([:green, "* fathom ", :reset, "#{output} — up to date, #{elapsed}ms"])
+  end
+
+  defp report({:ok, counts, removed}, output, elapsed) do
+    summary =
+      "#{format_number(total(counts))} facts replaced across " <>
+        "#{format_number(length(removed))} modules"
+
+    header(output, summary, elapsed)
+    breakdown(counts)
+  end
+
+  defp report({:ok, counts}, output, elapsed) do
     size = output |> File.stat!() |> Map.fetch!(:size)
+    header(output, "#{format_number(total(counts))} facts, #{format_bytes(size)}", elapsed)
+    breakdown(counts)
+  end
 
-    Mix.shell().info([
-      :green,
-      "* fathom ",
-      :reset,
-      "#{output} — #{format_number(total)} facts, #{format_bytes(size)}, #{elapsed}ms"
-    ])
+  defp header(output, summary, elapsed) do
+    Mix.shell().info([:green, "* fathom ", :reset, "#{output} — #{summary}, #{elapsed}ms"])
+  end
 
+  defp total(counts), do: counts |> Map.values() |> Enum.sum()
+
+  defp breakdown(counts) do
     counts
     |> Enum.sort_by(fn {_table, count} -> -count end)
     |> Enum.each(fn {table, count} ->

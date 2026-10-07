@@ -61,7 +61,7 @@ defmodule Mix.Tasks.Fathom.Query do
         {:ok, stmt} ->
           {:ok, columns} = Sqlite3.columns(conn, stmt)
           {:ok, rows} = Sqlite3.fetch_all(conn, stmt)
-          Sqlite3.release(conn, stmt)
+          :ok = Sqlite3.release(conn, stmt)
           {columns, rows}
 
         {:error, reason} ->

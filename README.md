@@ -171,16 +171,31 @@ bench/verify_against_xref.sh /path/to/repo /path/to/program.db MyApp.Repo
 
 ## Incremental builds
 
-Not yet. `mix fathom.build` is a full rebuild every time, which on a mid-sized
-application costs under ten seconds.
+```
+mix fathom.build --incremental
+```
 
-The schema is already shaped for it: every table can be deleted by module, which
-is the unit the compiler recompiles. An incremental build drops `--force`,
-collects the modules that produced definitions this time round, deletes their
-rows across every table, inserts the new facts, and purges any module with no
-BEAM file left on disk. The compiler already propagates compile-time
-dependencies, so it decides what to re-trace. The reason it is not here yet is
-that the correctness bugs all live in that path, and a full rebuild that is
+Opt-in, and deliberately so. It drops `--force` and lets the compiler decide
+what is stale; whatever it recompiles is what the tracer sees. Those modules
+have their rows deleted across every table and reinserted from the new facts,
+any module with no BEAM file left on disk is purged, and the whole update runs
+as one transaction against the existing file. Every table carries the module
+it belongs to, which is what makes delete-by-module possible at all.
+
+On the sample fixture a no-op incremental build is about half the time of a
+full one, and the gap widens with the size of the project, because the work
+is proportional to what changed rather than to what exists.
+
+The caveat is the reason it is not the default. The compiler recompiles a
+module when its *compile-time* dependencies change, so a module that merely
+calls a changed function at runtime is not recompiled and its rows stay as
+they were. Rename a function and the calls to it recorded against another
+module will keep naming the old one until something else forces that module
+to rebuild. The staleness is one-directional and it is invisible: the
+database does not look wrong, it looks finished.
+
+So: `--incremental` while you are working and asking questions as you go, a
+plain `mix fathom.build` before you trust the answer. A full rebuild that is
 certainly right beats an incremental one that is subtly stale.
 
 ## License

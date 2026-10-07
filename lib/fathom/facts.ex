@@ -14,17 +14,25 @@ defmodule Fathom.Facts do
 
   @table :fathom_facts
 
-  @doc "Creates the fact table, replacing any table left over from a previous run."
+  @doc """
+  Creates the fact table, replacing any table left over from a previous run.
+
+  Returns `:ok`. The table is named, so the identifier `:ets.new/2` hands back
+  is of no use to anyone and callers would only be discarding it.
+  """
   def init do
     if :ets.whereis(@table) != :undefined, do: :ets.delete(@table)
 
-    :ets.new(@table, [
-      :named_table,
-      :public,
-      :duplicate_bag,
-      write_concurrency: :auto,
-      read_concurrency: false
-    ])
+    _table =
+      :ets.new(@table, [
+        :named_table,
+        :public,
+        :duplicate_bag,
+        write_concurrency: :auto,
+        read_concurrency: false
+      ])
+
+    :ok
   end
 
   @doc """
@@ -47,6 +55,21 @@ defmodule Fathom.Facts do
 
   @doc "Number of facts currently buffered."
   def count, do: :ets.info(@table, :size)
+
+  @doc """
+  The distinct partition keys, i.e. every module that has produced a fact.
+
+  During an incremental build this is how the compiler's choice of what to
+  recompile is read back out. Call it before any post-compile pass starts
+  buffering facts of its own, or those modules will be in the answer too.
+  """
+  def partitions do
+    Stream.unfold(:ets.first(@table), fn
+      :"$end_of_table" -> nil
+      module -> {module, :ets.next(@table, module)}
+    end)
+    |> Enum.to_list()
+  end
 
   @doc "Whether the table exists, i.e. whether a build is in progress."
   def started?, do: :ets.whereis(@table) != :undefined

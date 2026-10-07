@@ -11,6 +11,12 @@ defmodule Fathom.Store do
   Indexes are created after the load rather than before. Module and file names
   repeat constantly across facts, so both are memoised while folding; without
   that, `inspect/1` on module atoms dominates the dump.
+
+  `update/4` is the incremental counterpart. It keeps the same load path but
+  reuses an existing file, deleting the rows owned by every module the
+  compiler touched before inserting their replacements. It does not disable
+  journalling: a full write throws the file away on failure, whereas an
+  update has to leave the previous database intact.
   """
 
   alias Exqlite.Sqlite3
@@ -24,6 +30,14 @@ defmodule Fathom.Store do
     "PRAGMA locking_mode = EXCLUSIVE"
   ]
 
+  # An update rewrites part of a database the caller wants to keep, so the
+  # journal stays on and the whole thing rides on one transaction. The two
+  # pragmas that only buy speed are still worth setting.
+  @update_pragmas [
+    "PRAGMA temp_store = MEMORY",
+    "PRAGMA cache_size = -64000"
+  ]
+
   @doc """
   Builds the database at `path` from the facts currently buffered.
 
@@ -31,36 +45,29 @@ defmodule Fathom.Store do
   database is portable and the paths are the ones an agent can open directly.
   """
   def write(path, root, meta \\ %{}) do
-    File.rm(path)
-    File.rm(path <> "-wal")
-    File.rm(path <> "-shm")
+    # The database and its sidecars may not be there at all on a first build,
+    # so these are best-effort by design.
+    Enum.each([path, path <> "-wal", path <> "-shm"], &File.rm/1)
     File.mkdir_p!(Path.dirname(path))
 
     {:ok, conn} = Sqlite3.open(path)
 
     try do
-      Enum.each(@bulk_pragmas, &Sqlite3.execute(conn, &1))
-      Enum.each(Schema.create_table_statements(), &Sqlite3.execute(conn, &1))
+      Enum.each(@bulk_pragmas, &exec!(conn, &1))
+      Enum.each(Schema.create_table_statements(), &exec!(conn, &1))
 
-      :ok = Sqlite3.execute(conn, "BEGIN")
-      inserts = prepare_inserts(conn)
-      updates = prepare_updates(conn)
+      exec!(conn, "BEGIN")
+      counts = populate(conn, root)
+      # `counts` is what this dump inserted, which omits the tables derived in
+      # SQL afterwards. `fact_counts` is meant to describe the database, so it
+      # is read back for both write paths rather than differing between them.
+      write_meta(conn, meta, table_counts(conn))
+      exec!(conn, "COMMIT")
 
-      counts = load_facts(conn, inserts, root)
-      mark_generated(conn)
-      seed_modules(conn)
-      apply_updates(conn, updates)
-      derive_module_deps(conn)
-      write_meta(conn, meta, counts)
-
-      release_all(conn, inserts)
-      release_all(conn, updates)
-      :ok = Sqlite3.execute(conn, "COMMIT")
-
-      Enum.each(Schema.create_index_statements(), &Sqlite3.execute(conn, &1))
-      Sqlite3.execute(conn, "ANALYZE")
-      Sqlite3.execute(conn, "PRAGMA journal_mode = DELETE")
-      Sqlite3.execute(conn, "VACUUM")
+      Enum.each(Schema.create_index_statements(), &exec!(conn, &1))
+      exec!(conn, "ANALYZE")
+      exec!(conn, "PRAGMA journal_mode = DELETE")
+      exec!(conn, "VACUUM")
 
       {:ok, counts}
     after
@@ -68,7 +75,69 @@ defmodule Fathom.Store do
     end
   end
 
+  @doc """
+  Updates the database at `path` in place from the facts currently buffered.
+
+  `scope` describes what the compiler did:
+
+    * `:recompiled` - the modules that were compiled this round, whose rows are
+      deleted before the new facts are inserted
+    * `:live` - every module that still has a BEAM file, used to purge modules
+      whose source was deleted or renamed
+
+  Returns `{:ok, counts, removed}`, where `counts` is what this round inserted
+  and `removed` is the modules whose rows were dropped.
+
+  The caller is responsible for falling back to `write/3` when `path` does not
+  exist yet; there is nothing to update into.
+  """
+  def update(path, root, scope, meta \\ %{}) do
+    # Opening a missing file would hand back an empty database and fail on the
+    # first table that is not there, several steps from the actual mistake.
+    File.exists?(path) ||
+      raise ArgumentError, "no database at #{path} to update; use write/3 for the first build"
+
+    {:ok, conn} = Sqlite3.open(path)
+
+    try do
+      Enum.each(@update_pragmas, &exec!(conn, &1))
+
+      exec!(conn, "BEGIN")
+
+      recompiled = Enum.map(scope.recompiled, &module_string/1)
+      purged = purged_modules(conn, scope.live)
+      removed = Enum.uniq(recompiled ++ purged)
+      delete_modules(conn, removed, purged)
+
+      counts = populate(conn, root)
+      write_meta(conn, meta, table_counts(conn))
+      exec!(conn, "COMMIT")
+
+      exec!(conn, "ANALYZE")
+
+      {:ok, counts, removed}
+    after
+      Sqlite3.close(conn)
+    end
+  end
+
   # -- loading ---------------------------------------------------------------
+
+  defp populate(conn, root) do
+    inserts = prepare_inserts(conn)
+    updates = prepare_updates(conn)
+
+    counts = load_facts(conn, inserts, root)
+    mark_generated(conn)
+    seed_modules(conn)
+    apply_updates(conn, updates)
+    derive_module_deps(conn)
+
+    release_all(conn, inserts)
+    release_all(conn, updates)
+
+    counts
+  end
 
   defp load_facts(conn, inserts, root) do
     Facts.reduce(%{}, fn fact, counts ->
@@ -100,6 +169,45 @@ defmodule Fathom.Store do
       _other, acc ->
         acc
     end)
+  end
+
+  # -- incremental deletion --------------------------------------------------
+
+  # A module the database knows about that no longer has a BEAM file behind it
+  # has had its source deleted or renamed. Nothing will recompile it, so
+  # nothing else would ever remove its rows.
+  #
+  # `modules` is the index of what the database knows, since every module that
+  # defines anything is seeded into it.
+  defp purged_modules(conn, live) do
+    live = MapSet.new(live, &module_string/1)
+
+    conn
+    |> fetch_column("SELECT module FROM modules")
+    |> Enum.reject(&MapSet.member?(live, &1))
+  end
+
+  defp delete_modules(conn, removed, purged) do
+    deletes =
+      Map.new(Schema.module_scoped_tables(), fn {table, _column} ->
+        {:ok, stmt} = Sqlite3.prepare(conn, Schema.delete_by_module_statement(table))
+        {table, stmt}
+      end)
+
+    Enum.each(removed, fn module ->
+      Enum.each(deletes, fn {_table, stmt} -> run(conn, stmt, [module]) end)
+    end)
+
+    # A dependency edge is deleted along with the module it leaves, so a module
+    # that was merely recompiled gets its outgoing edges rebuilt from this
+    # round's facts. A module that is gone also leaves edges pointing *at* it,
+    # held by modules the compiler had no reason to touch, and those would
+    # otherwise survive as references to something that no longer exists.
+    {:ok, inbound} = Sqlite3.prepare(conn, "DELETE FROM module_deps WHERE to_module = ?")
+    Enum.each(purged, &run(conn, inbound, [&1]))
+    release!(conn, inbound)
+
+    release_all(conn, deletes)
   end
 
   # -- fact to row -----------------------------------------------------------
@@ -231,7 +339,7 @@ defmodule Fathom.Store do
   @generated_threshold 5
 
   defp mark_generated(conn) do
-    Sqlite3.execute(conn, """
+    exec!(conn, """
     UPDATE functions SET generated = 1
     WHERE (file, line) IN (
       SELECT file, line FROM functions
@@ -241,7 +349,7 @@ defmodule Fathom.Store do
   end
 
   defp seed_modules(conn) do
-    Sqlite3.execute(conn, """
+    exec!(conn, """
     INSERT OR IGNORE INTO modules (module, file, doc)
     SELECT module, MIN(file), NULL FROM functions GROUP BY module
     """)
@@ -253,7 +361,7 @@ defmodule Fathom.Store do
   # compile-time by construction. This mirrors how `mix xref` classifies edges,
   # at the cost of being an approximation in both directions.
   defp derive_module_deps(conn) do
-    Sqlite3.execute(conn, """
+    exec!(conn, """
     INSERT OR IGNORE INTO module_deps (from_module, to_module, type)
     SELECT DISTINCT caller_module, callee_module,
       CASE
@@ -265,17 +373,27 @@ defmodule Fathom.Store do
     WHERE caller_module <> callee_module
     """)
 
-    Sqlite3.execute(conn, """
+    exec!(conn, """
     INSERT OR IGNORE INTO module_deps (from_module, to_module, type)
     SELECT DISTINCT caller_module, struct_module, 'compile'
     FROM struct_uses WHERE caller_module <> struct_module
     """)
 
-    Sqlite3.execute(conn, """
+    exec!(conn, """
     INSERT OR IGNORE INTO module_deps (from_module, to_module, type)
     SELECT DISTINCT module, used_module, 'compile'
     FROM use_sites WHERE module <> used_module
     """)
+  end
+
+  # After a full write the facts inserted are the facts in the database, but
+  # after an update they are only the slice that changed. `fact_counts` is
+  # meant to describe the database, so an update reads it back rather than
+  # recording what it happened to insert.
+  defp table_counts(conn) do
+    for {table, _cols} <- Schema.tables(), table != :meta, into: %{} do
+      {table, conn |> fetch_column("SELECT count(*) FROM #{table}") |> hd()}
+    end
   end
 
   defp write_meta(conn, meta, counts) do
@@ -292,7 +410,7 @@ defmodule Fathom.Store do
       |> Map.put(:otp_release, System.otp_release())
 
     Enum.each(rows, fn {key, value} -> run(conn, stmt, [to_string(key), to_string(value)]) end)
-    Sqlite3.release(conn, stmt)
+    release!(conn, stmt)
   end
 
   # -- statement plumbing ----------------------------------------------------
@@ -321,8 +439,22 @@ defmodule Fathom.Store do
   end
 
   defp release_all(conn, statements) do
-    Enum.each(statements, fn {_key, stmt} -> Sqlite3.release(conn, stmt) end)
+    Enum.each(statements, fn {_key, stmt} -> release!(conn, stmt) end)
   end
+
+  defp fetch_column(conn, sql) do
+    {:ok, stmt} = Sqlite3.prepare(conn, sql)
+    {:ok, rows} = Sqlite3.fetch_all(conn, stmt)
+    release!(conn, stmt)
+    Enum.map(rows, &hd/1)
+  end
+
+  # Every statement is asserted. A failed `execute` that is thrown away leaves
+  # a database that is missing rows and says nothing about it, which is the
+  # exact failure this whole module is built to avoid.
+  defp exec!(conn, sql), do: :ok = Sqlite3.execute(conn, sql)
+
+  defp release!(conn, stmt), do: :ok = Sqlite3.release(conn, stmt)
 
   defp run(conn, stmt, values) do
     :ok = Sqlite3.reset(stmt)

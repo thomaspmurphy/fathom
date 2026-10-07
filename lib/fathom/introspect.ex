@@ -68,6 +68,8 @@ defmodule Fathom.Introspect do
           )
         end
 
+        :ok
+
       _ ->
         :ok
     end
@@ -77,47 +79,57 @@ defmodule Fathom.Introspect do
   defp doc_text(_), do: nil
 
   defp specs(module) do
-    with {:ok, specs} <- Code.Typespec.fetch_specs(module) do
-      for {{name, arity}, forms} <- specs do
-        text =
-          forms
-          |> Enum.map_join("\n", fn form ->
-            "@spec " <> Macro.to_string(Code.Typespec.spec_to_quoted(name, form))
-          end)
+    case Code.Typespec.fetch_specs(module) do
+      {:ok, specs} ->
+        Enum.each(specs, fn {{name, arity}, forms} ->
+          Facts.put(module, {:spec, {module, name, arity}, spec_text(name, forms)})
+        end)
 
-        Facts.put(module, {:spec, {module, name, arity}, text})
-      end
+      :error ->
+        :ok
     end
+  end
 
-    :ok
+  defp spec_text(name, forms) do
+    Enum.map_join(forms, "\n", fn form ->
+      "@spec " <> Macro.to_string(Code.Typespec.spec_to_quoted(name, form))
+    end)
   end
 
   defp callbacks(module) do
-    with {:ok, callbacks} <- Code.Typespec.fetch_callbacks(module) do
-      for {{name, arity}, forms} <- callbacks, form <- forms do
-        text = "@callback " <> Macro.to_string(Code.Typespec.spec_to_quoted(name, form))
-        Facts.put(module, {:callback_def, module, name, arity, text})
-      end
-    end
+    case Code.Typespec.fetch_callbacks(module) do
+      {:ok, callbacks} ->
+        for {{name, arity}, forms} <- callbacks, form <- forms do
+          text = "@callback " <> Macro.to_string(Code.Typespec.spec_to_quoted(name, form))
+          Facts.put(module, {:callback_def, module, name, arity, text})
+        end
 
-    :ok
+        :ok
+
+      :error ->
+        :ok
+    end
   end
 
   defp types(module) do
-    with {:ok, types} <- Code.Typespec.fetch_types(module) do
-      for {kind, {name, _def, args} = type} <- types do
-        text = "@#{kind} " <> Macro.to_string(Code.Typespec.type_to_quoted(type))
-        Facts.put(module, {:type_def, module, name, length(args), kind, text})
-      end
-    end
+    case Code.Typespec.fetch_types(module) do
+      {:ok, types} ->
+        Enum.each(types, fn {kind, {name, _def, args} = type} ->
+          text = "@#{kind} " <> Macro.to_string(Code.Typespec.type_to_quoted(type))
+          Facts.put(module, {:type_def, module, name, length(args), kind, text})
+        end)
 
-    :ok
+      :error ->
+        :ok
+    end
   end
 
   defp behaviours(module) do
     for {:behaviour, mods} <- attributes(module), behaviour <- mods do
       Facts.put(module, {:behaviour, module, behaviour})
     end
+
+    :ok
   end
 
   defp protocol(module) do
@@ -145,23 +157,23 @@ defmodule Fathom.Introspect do
       source = module.__schema__(:source)
       Facts.put(module, {:schema, module, source && to_string(source)})
 
-      for field <- module.__schema__(:fields) do
+      Enum.each(module.__schema__(:fields), fn field ->
         type = module.__schema__(:type, field)
         primary? = field in module.__schema__(:primary_key)
         Facts.put(module, {:schema_field, module, field, inspect(type), primary?})
-      end
+      end)
 
-      for name <- module.__schema__(:associations) do
+      Enum.each(module.__schema__(:associations), fn name ->
         assoc = module.__schema__(:association, name)
 
         Facts.put(
           module,
           {:schema_assoc, module, name, assoc_cardinality(assoc), assoc_related(assoc)}
         )
-      end
+      end)
+    else
+      :ok
     end
-
-    :ok
   end
 
   defp assoc_cardinality(%{cardinality: cardinality}), do: to_string(cardinality)
@@ -175,16 +187,16 @@ defmodule Fathom.Introspect do
 
   defp phoenix_router(module) do
     if function_exported?(module, :__routes__, 0) do
-      for route <- module.__routes__() do
+      Enum.each(module.__routes__(), fn route ->
         Facts.put(
           module,
           {:route, module, to_string(route.verb), route.path, inspect(route.plug),
            to_string(route.plug_opts), route_helper(route)}
         )
-      end
+      end)
+    else
+      :ok
     end
-
-    :ok
   end
 
   defp route_helper(%{helper: helper}) when is_binary(helper), do: helper
@@ -202,5 +214,10 @@ defmodule Fathom.Introspect do
     _ -> []
   end
 
-  defp ensure_loaded(module), do: Code.ensure_loaded(module)
+  # Reflection degrades gracefully on a module that will not load, so the
+  # result is deliberately not propagated.
+  defp ensure_loaded(module) do
+    _ = Code.ensure_loaded(module)
+    :ok
+  end
 end
