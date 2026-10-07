@@ -17,8 +17,7 @@ defmodule Fathom.Facts do
   @doc """
   Creates the fact table, replacing any table left over from a previous run.
 
-  Returns `:ok`. The table is named, so the identifier `:ets.new/2` hands back
-  is of no use to anyone and callers would only be discarding it.
+  Returns `:ok`; the table is named, so the identifier is of no use to callers.
   """
   def init do
     if :ets.whereis(@table) != :undefined, do: :ets.delete(@table)

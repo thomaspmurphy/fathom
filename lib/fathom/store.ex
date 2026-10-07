@@ -58,9 +58,6 @@ defmodule Fathom.Store do
 
       exec!(conn, "BEGIN")
       counts = populate(conn, root)
-      # `counts` is what this dump inserted, which omits the tables derived in
-      # SQL afterwards. `fact_counts` is meant to describe the database, so it
-      # is read back for both write paths rather than differing between them.
       write_meta(conn, meta, table_counts(conn))
       exec!(conn, "COMMIT")
 
@@ -198,11 +195,8 @@ defmodule Fathom.Store do
       Enum.each(deletes, fn {_table, stmt} -> run(conn, stmt, [module]) end)
     end)
 
-    # A dependency edge is deleted along with the module it leaves, so a module
-    # that was merely recompiled gets its outgoing edges rebuilt from this
-    # round's facts. A module that is gone also leaves edges pointing *at* it,
-    # held by modules the compiler had no reason to touch, and those would
-    # otherwise survive as references to something that no longer exists.
+    # Outgoing edges are deleted with the module that owns them. A purged
+    # module also has edges pointing at it, held by modules nothing recompiled.
     {:ok, inbound} = Sqlite3.prepare(conn, "DELETE FROM module_deps WHERE to_module = ?")
     Enum.each(purged, &run(conn, inbound, [&1]))
     release!(conn, inbound)
@@ -360,10 +354,15 @@ defmodule Fathom.Store do
   # function body does not. Macro expansion, struct expansion and `use` are
   # compile-time by construction. This mirrors how `mix xref` classifies edges,
   # at the cost of being an approximation in both directions.
+  # The three sources overlap: one pair can be a compile-time call, a struct
+  # expansion and a `use` at once. `UNION` folds them together before insert,
+  # because the unique index is not built until after the load and `OR IGNORE`
+  # has no constraint to work against. It still matters incrementally, where
+  # the index exists and rows from untouched modules are already there.
   defp derive_module_deps(conn) do
     exec!(conn, """
     INSERT OR IGNORE INTO module_deps (from_module, to_module, type)
-    SELECT DISTINCT caller_module, callee_module,
+    SELECT caller_module, callee_module,
       CASE
         WHEN kind IN ('remote_macro', 'imported_macro') THEN 'compile'
         WHEN caller LIKE '%.__compile__/0' THEN 'compile'
@@ -371,25 +370,21 @@ defmodule Fathom.Store do
       END
     FROM calls
     WHERE caller_module <> callee_module
-    """)
 
-    exec!(conn, """
-    INSERT OR IGNORE INTO module_deps (from_module, to_module, type)
-    SELECT DISTINCT caller_module, struct_module, 'compile'
+    UNION
+
+    SELECT caller_module, struct_module, 'compile'
     FROM struct_uses WHERE caller_module <> struct_module
-    """)
 
-    exec!(conn, """
-    INSERT OR IGNORE INTO module_deps (from_module, to_module, type)
-    SELECT DISTINCT module, used_module, 'compile'
+    UNION
+
+    SELECT module, used_module, 'compile'
     FROM use_sites WHERE module <> used_module
     """)
   end
 
-  # After a full write the facts inserted are the facts in the database, but
-  # after an update they are only the slice that changed. `fact_counts` is
-  # meant to describe the database, so an update reads it back rather than
-  # recording what it happened to insert.
+  # `fact_counts` describes the database, not what a given run inserted, so it
+  # is read back rather than accumulated. An update only inserts a slice.
   defp table_counts(conn) do
     for {table, _cols} <- Schema.tables(), table != :meta, into: %{} do
       {table, conn |> fetch_column("SELECT count(*) FROM #{table}") |> hd()}
@@ -449,9 +444,7 @@ defmodule Fathom.Store do
     Enum.map(rows, &hd/1)
   end
 
-  # Every statement is asserted. A failed `execute` that is thrown away leaves
-  # a database that is missing rows and says nothing about it, which is the
-  # exact failure this whole module is built to avoid.
+  # A discarded `execute` error leaves a database quietly missing rows.
   defp exec!(conn, sql), do: :ok = Sqlite3.execute(conn, sql)
 
   defp release!(conn, stmt), do: :ok = Sqlite3.release(conn, stmt)

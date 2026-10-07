@@ -157,15 +157,11 @@ defmodule Fathom.Schema do
      ]}
   ]
 
-  # Which column holds the module a row belongs to, for every table that is
-  # owned by one. This is what makes an incremental build possible: the unit
-  # the compiler recompiles is a module, so the unit the database deletes has
-  # to be a module too.
+  # The column holding the module each row belongs to. The compiler recompiles
+  # a module at a time, so that is the unit an incremental build deletes by.
   #
-  # `meta` is absent because it describes the build rather than any module.
-  # `impls` is keyed on the implementation module (`Describable.User`), which
-  # is itself a compiled module, so it is deleted with the file that defines
-  # it rather than with the protocol or the type.
+  # `meta` is absent because it describes the build, not a module. `impls` is
+  # keyed on the implementation module, which is itself compiled.
   @module_columns %{
     modules: "module",
     functions: "module",

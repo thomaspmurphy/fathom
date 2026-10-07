@@ -67,10 +67,8 @@ defmodule Mix.Tasks.Fathom.Build do
 
     Facts.init()
 
-    # The recompiled set comes straight back out of the compile step. Reading
-    # it later would mean reading it after some other pass had buffered facts
-    # of its own, at which point every module looks as though it had been
-    # recompiled.
+    # Taken from the compile step itself: read later, after another pass has
+    # buffered facts, every module would look recompiled.
     recompiled =
       if Keyword.get(opts, :compile, true),
         do: compile!(incremental?),
@@ -78,9 +76,8 @@ defmodule Mix.Tasks.Fathom.Build do
 
     live = Introspect.project_modules()
 
-    # A full build reflects over the whole project; an incremental one only
-    # over what was recompiled, since the rows for everything else are staying
-    # exactly where they are.
+    # An incremental build only reflects over what was recompiled; every other
+    # module's rows are staying put.
     Introspect.run(if incremental?, do: recompiled, else: live)
 
     meta = %{
@@ -158,13 +155,26 @@ defmodule Mix.Tasks.Fathom.Build do
     Enum.each(@compilers, &Mix.Task.reenable/1)
 
     args = ["--no-prune-code-paths", "--tracer", "Fathom.Tracer"]
+    code_path = :code.get_path()
 
     # Dropping `--force` is the whole of the incremental build on this side:
     # the compiler's own staleness tracking decides what gets re-traced.
     Mix.Task.run("compile", if(incremental?, do: args, else: ["--force" | args]))
 
+    restore_dropped_paths(code_path)
+
     # Whatever the tracer buffered is exactly what the compiler recompiled.
     Facts.partitions()
+  end
+
+  # Compiling leaves the code path describing the project's own dependency
+  # tree, which drops Fathom when it is not one of them — the `ERL_LIBS` route.
+  # `Introspect` and `Store` run after this point and are loaded lazily, so
+  # they would not be found. Dropped entries go back at the end of the path.
+  defp restore_dropped_paths(code_path) do
+    code_path
+    |> Kernel.--(:code.get_path())
+    |> Enum.each(&:code.add_pathz/1)
   end
 
   # An incremental build that recompiled nothing is the common case once the

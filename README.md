@@ -65,8 +65,13 @@ code path from outside, as long as it was compiled with the same Elixir and OTP
 as the target project:
 
 ```
-ERL_LIBS=/path/to/fathom/_build/dev/lib mix fathom.build
+cd /path/to/fathom && MIX_ENV=prod mix compile
+ERL_LIBS=/path/to/fathom/_build/prod/lib mix fathom.build
 ```
+
+Build it with `MIX_ENV=prod`. `ERL_LIBS` puts every application in that
+directory on the code path, and a `dev` build carries Fathom's own tooling,
+which will collide with the target project if the two share a dependency.
 
 ## Use
 
