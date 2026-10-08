@@ -93,4 +93,17 @@ defmodule Fathom.Fixture do
       other -> raise "expected a single value, got: #{inspect(other)}"
     end
   end
+
+  @doc """
+  The `generated` flag for one `mfa`.
+
+  Raises when the function is absent, so a renamed fixture fails loudly
+  instead of passing on a `nil` that never equalled 1 anyway.
+  """
+  def generated(mfa) do
+    case one("SELECT generated FROM functions WHERE mfa = ?", [mfa]) do
+      nil -> raise "no function row for #{mfa}"
+      flag -> flag
+    end
+  end
 end

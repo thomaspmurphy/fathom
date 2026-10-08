@@ -125,7 +125,6 @@ defmodule Fathom.Store do
     updates = prepare_updates(conn)
 
     counts = load_facts(conn, inserts, root)
-    mark_generated(conn)
     seed_modules(conn)
     apply_updates(conn, updates)
     derive_module_deps(conn)
@@ -206,7 +205,7 @@ defmodule Fathom.Store do
 
   # -- fact to row -----------------------------------------------------------
 
-  defp row({:definition, mfa, kind, file, line}, root) do
+  defp row({:definition, mfa, kind, file, line, generated?}, root) do
     {module, name, arity} = mfa
 
     {:functions,
@@ -221,7 +220,7 @@ defmodule Fathom.Store do
        nil,
        nil,
        nil,
-       0
+       bool(generated?)
      ]}
   end
 
@@ -323,24 +322,6 @@ defmodule Fathom.Store do
   defp row(_fact, _root), do: :skip
 
   # -- derived tables --------------------------------------------------------
-
-  # A macro-generated definition reports the line of the macro that produced
-  # it, so `use Ecto.Repo` leaves seventy-odd functions all claiming the same
-  # line. Nothing else does that: you cannot write five `def`s on one line of
-  # Elixir. Marking them matters because they otherwise swamp any question
-  # about the code someone actually wrote — `use Ecto.Repo` alone contributes
-  # fifty uncalled public functions to a naive dead-code query.
-  @generated_threshold 5
-
-  defp mark_generated(conn) do
-    exec!(conn, """
-    UPDATE functions SET generated = 1
-    WHERE (file, line) IN (
-      SELECT file, line FROM functions
-      GROUP BY file, line HAVING count(*) >= #{@generated_threshold}
-    )
-    """)
-  end
 
   defp seed_modules(conn) do
     exec!(conn, """

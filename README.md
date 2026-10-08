@@ -111,13 +111,18 @@ tell you about themselves.
 
 ### Two things worth knowing
 
-**Macro-generated definitions are marked.** Running this over Credo, 3,016 of
-its 4,701 function definitions came from a macro rather than from someone
+**Macro-generated definitions are marked.** Running this over Credo, 3,192 of
+its 4,783 function definitions came from a macro rather than from someone
 typing them. `Credo.Service.SourceFileAST` is a four-line module whose entire
 body is `use Credo.Service.ETSTableHelper`, and `use Ecto.Repo` contributes
 about seventy public functions to any project that has one. They are flagged
 with `generated = 1`, because otherwise they swamp any question about the code
 a person actually wrote.
+
+The flag comes from the compiler, not a guess: `Module.get_definition/2` tags a
+definition produced by a macro with the expanding context, so `defstruct`'s
+`__struct__/0` and a `use` that injects a single function are both caught, while
+a hand-written head whose default arguments expand to several arities is not.
 
 **Gaps in the call graph are recorded, not hidden.** `apply/3`, a module held in
 a variable or read from config, a protocol dispatch. None of these produce an
