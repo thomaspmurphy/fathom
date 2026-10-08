@@ -45,6 +45,38 @@ defmodule FathomTest do
       assert doc =~ "Creates a user"
       assert spec =~ "@spec create_user(map()) :: result()"
     end
+
+    test "flags definitions a macro produced, including public and private ones" do
+      assert generated("SampleApp.Injected.injected_one/0") == 1
+      assert generated("SampleApp.Injected.injected_two/0") == 1
+      assert generated("SampleApp.Injected.injected_private/0") == 1
+      assert generated("SampleApp.Injected.injected_caller/0") == 1
+    end
+
+    test "flags a generated definition that shares its line with no other" do
+      # The old heuristic marked a line only when five or more definitions
+      # landed on it, so a macro injecting a single function read as written.
+      assert generated("SampleApp.Injected.injected_solo/0") == 1
+    end
+
+    test "flags struct callbacks, which defstruct generates" do
+      assert generated("SampleApp.User.__struct__/0") == 1
+      assert generated("SampleApp.User.__struct__/1") == 1
+    end
+
+    test "does not flag a hand-written head whose defaults expand to several arities" do
+      # Three arities from one written line: the inverse failure of a
+      # heuristic that counts definitions sharing a line.
+      assert generated("SampleApp.Injected.written_with_defaults/1") == 0
+      assert generated("SampleApp.Injected.written_with_defaults/2") == 0
+      assert generated("SampleApp.Injected.written_with_defaults/3") == 0
+    end
+
+    test "does not flag ordinary hand-written definitions" do
+      assert generated("SampleApp.Injected.written_plain/0") == 0
+      assert generated("SampleApp.Accounts.create_user/1") == 0
+      assert generated("SampleApp.Accounts.build_user/1") == 0
+    end
   end
 
   describe "call graph" do

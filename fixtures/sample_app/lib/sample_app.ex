@@ -26,6 +26,45 @@ defmodule SampleApp.Behaviour do
   @callback handle(term()) :: :ok | {:error, term()}
 end
 
+defmodule SampleApp.Injector do
+  @moduledoc """
+  Injects functions the way a framework's `use` does, so the generated flag
+  has something to detect that no line-collision heuristic could.
+
+  `injected_solo/0` is deliberately the only definition its macro produces:
+  it is generated, but it shares its line with nothing.
+  """
+
+  defmacro __using__(_opts) do
+    quote do
+      def injected_one, do: :one
+      def injected_two, do: :two
+      defp injected_private, do: :private
+      def injected_caller, do: injected_private()
+    end
+  end
+
+  defmacro inject_solo do
+    quote do
+      def injected_solo, do: :solo
+    end
+  end
+end
+
+defmodule SampleApp.Injected do
+  @moduledoc "Mixes generated and hand-written definitions in one module."
+
+  require SampleApp.Injector
+  use SampleApp.Injector
+
+  SampleApp.Injector.inject_solo()
+
+  @doc "Written by hand, with defaults that expand to three arities on one line."
+  def written_with_defaults(a, b \\ :b, c \\ :c), do: {a, b, c}
+
+  def written_plain, do: :plain
+end
+
 defmodule SampleApp.Accounts do
   @moduledoc "The context module. Sits between the web layer and the repo."
 

@@ -54,7 +54,11 @@ defmodule Fathom.Tracer do
     for {name, arity} <- Module.definitions_in(module) do
       case Module.get_definition(module, {name, arity}) do
         {:v1, kind, meta, clauses} ->
-          Facts.put(module, {:definition, {module, name, arity}, kind, env.file, line(meta)})
+          Facts.put(
+            module,
+            {:definition, {module, name, arity}, kind, env.file, line(meta), generated?(meta)}
+          )
+
           scan_clauses(clauses, {module, name, arity}, env)
 
         _other ->
@@ -113,4 +117,15 @@ defmodule Fathom.Tracer do
 
   defp line(meta) when is_list(meta), do: Keyword.get(meta, :line, 0)
   defp line(_), do: 0
+
+  # Whether a macro produced this definition, taken from the compiler rather
+  # than guessed. `Module.get_definition/2` tags a definition that came from a
+  # macro expansion with the expanding context (`context: Ecto.Repo`,
+  # `context: Kernel` for `defstruct`); one the author typed carries `column:`
+  # and no context. This distinguishes the two cases a line-collision heuristic
+  # cannot: a macro that injects a single function is still generated, and a
+  # head with default arguments produces several arities on one line that are
+  # all hand-written.
+  defp generated?(meta) when is_list(meta), do: Keyword.has_key?(meta, :context)
+  defp generated?(_), do: false
 end
