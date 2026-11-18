@@ -126,6 +126,12 @@ defmodule Fathom.Tracer do
   # cannot: a macro that injects a single function is still generated, and a
   # head with default arguments produces several arities on one line that are
   # all hand-written.
-  defp generated?(meta) when is_list(meta), do: Keyword.has_key?(meta, :context)
+  #
+  # The lower-arity clauses a default argument expands to are the exception:
+  # Elixir prepends `context: :elixir_def` to the head's own metadata, so that
+  # context says nothing about the author and any context after it decides.
+  defp generated?(meta) when is_list(meta),
+    do: Enum.any?(meta, &match?({:context, context} when context != :elixir_def, &1))
+
   defp generated?(_), do: false
 end
