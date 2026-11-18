@@ -115,10 +115,16 @@ defmodule Fathom.Guide do
     )
     SELECT DISTINCT re.verb, re.path
     FROM reach re
-    JOIN struct_uses su ON su.caller = re.mfa
-    JOIN schemas s ON s.module = su.struct_module
+    JOIN (SELECT caller, module FROM alias_refs
+          UNION SELECT caller, struct_module FROM struct_uses) t ON t.caller = re.mfa
+    JOIN schemas s ON s.module = t.module
     WHERE s.source = 'applications';
     ```
+
+    `struct_uses` alone is not enough: it only records struct literals, and
+    query code such as `from(a in Application)` or `Repo.get(Application, id)`
+    names the schema without building one. `alias_refs` records those
+    references per function.
 
     Two caveats. Carrying the route through the recursion makes this the most
     expensive query here, since the working set is one row per route per
