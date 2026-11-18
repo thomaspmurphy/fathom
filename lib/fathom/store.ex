@@ -125,7 +125,6 @@ defmodule Fathom.Store do
     updates = prepare_updates(conn)
 
     counts = load_facts(conn, inserts, root)
-    seed_modules(conn)
     apply_updates(conn, updates)
     derive_module_deps(conn)
 
@@ -173,8 +172,8 @@ defmodule Fathom.Store do
   # has had its source deleted or renamed. Nothing will recompile it, so
   # nothing else would ever remove its rows.
   #
-  # `modules` is the index of what the database knows, since every module that
-  # defines anything is seeded into it.
+  # `modules` is the index of what the database knows, since every module the
+  # tracer saw compiled has a row in it.
   defp purged_modules(conn, live) do
     live = MapSet.new(live, &module_string/1)
 
@@ -239,6 +238,10 @@ defmodule Fathom.Store do
        rel(file, root),
        line
      ]}
+  end
+
+  defp row({:module, module, file}, root) do
+    {:modules, [module_string(module), rel(file, root), nil]}
   end
 
   defp row({:dynamic_site, caller, kind, file, line}, root) do
@@ -322,13 +325,6 @@ defmodule Fathom.Store do
   defp row(_fact, _root), do: :skip
 
   # -- derived tables --------------------------------------------------------
-
-  defp seed_modules(conn) do
-    exec!(conn, """
-    INSERT OR IGNORE INTO modules (module, file, doc)
-    SELECT module, MIN(file), NULL FROM functions GROUP BY module
-    """)
-  end
 
   # A reference made from a module body runs while the file is being compiled,
   # which makes it a compile-time dependency; the same reference inside a

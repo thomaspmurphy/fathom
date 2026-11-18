@@ -108,6 +108,18 @@ defmodule FathomTest do
              ]
     end
 
+    test "does not record the compiler's own per-definition callback" do
+      assert one("""
+             SELECT count(*) FROM calls WHERE callee = 'Module.compile_definition_attributes/6'
+             """) == 0
+    end
+
+    test "attributes an @on_definition callback to the module body, not the function" do
+      assert column("""
+             SELECT caller FROM calls WHERE callee = 'SampleApp.DefinitionHook.on_def/6'
+             """) == ["SampleApp.Hooked.__compile__/0"]
+    end
+
     test "attributes references in a module body to the compile-time pseudo-function" do
       assert one("""
              SELECT count(*) FROM calls WHERE caller LIKE '%.__compile__/0'
@@ -133,6 +145,16 @@ defmodule FathomTest do
       assert "SampleApp.Dispatcher.via_config/1" in column(
                "SELECT caller FROM dynamic_sites WHERE kind = 'dynamic_module'"
              )
+    end
+
+    test "keeps distinct sites that a `use` collapses onto one line" do
+      # Three real sites, not one recorded three times, so the rows must stay.
+      use_line = one("SELECT line FROM use_sites WHERE module = 'SampleApp.InjectedTask'")
+
+      assert query("""
+             SELECT kind, line FROM dynamic_sites
+             WHERE caller = 'SampleApp.InjectedTask.prepare/1'
+             """) == List.duplicate(["dynamic_module", use_line], 3)
     end
 
     test "does not mistake map field access for a dynamic call" do
@@ -256,6 +278,15 @@ defmodule FathomTest do
 
       assert meta["project"] == "sample_app"
       assert meta["elixir_version"] == System.version()
+    end
+
+    test "counts the same modules as the modules table, including ones defining nothing" do
+      module_count = one("SELECT value FROM meta WHERE key = 'module_count'")
+
+      assert String.to_integer(module_count) == one("SELECT count(*) FROM modules")
+
+      assert one("SELECT file FROM modules WHERE module = 'SampleApp.Namespace'") ==
+               "lib/sample_app.ex"
     end
   end
 end

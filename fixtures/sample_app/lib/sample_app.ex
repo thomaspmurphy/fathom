@@ -123,3 +123,50 @@ defmodule SampleApp.Web do
     quote do: unquote(template)
   end
 end
+
+defmodule SampleApp.DefinitionHook do
+  @moduledoc "An `@on_definition` callback, which the compiler runs once per definition."
+
+  def on_def(_env, _kind, _name, _args, _guards, _body), do: :ok
+end
+
+defmodule SampleApp.Hooked do
+  @moduledoc "A module whose definitions each trigger a compile-time callback."
+
+  @on_definition {SampleApp.DefinitionHook, :on_def}
+
+  def hooked(arg), do: arg
+end
+
+defmodule SampleApp.Namespace do
+  defmodule Inner do
+    @moduledoc false
+
+    def inner, do: :inner
+  end
+end
+
+defmodule SampleApp.TaskInjector do
+  @moduledoc """
+  Injects a function with three dynamic dispatch sites. Quoted code carries no
+  lines of its own, so all three land on the line of the `use`.
+  """
+
+  defmacro __using__(_opts) do
+    quote do
+      def prepare(children) do
+        Enum.each(children, & &1.start_link([]))
+
+        Enum.each(children, fn
+          {module, opts} -> module.start_link(opts)
+          module -> module.start_link([])
+        end)
+      end
+    end
+  end
+end
+
+defmodule SampleApp.InjectedTask do
+  @moduledoc false
+  use SampleApp.TaskInjector
+end

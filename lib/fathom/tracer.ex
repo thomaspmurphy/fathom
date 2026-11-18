@@ -28,6 +28,10 @@ defmodule Fathom.Tracer do
   @eval_dispatch [{Code, :eval_string}, {Code, :eval_quoted}, {Code, :eval_file}]
 
   @doc false
+  def trace({:remote_function, meta, mod, name, 6}, %{function: {_, _}} = env) do
+    on_definition_call({mod, name}, meta, env)
+  end
+
   def trace({kind, meta, mod, name, arity}, env) when kind in @call_kinds do
     record_call(kind, {mod, name, arity}, meta, env)
   end
@@ -50,6 +54,7 @@ defmodule Fathom.Tracer do
 
   def trace({:on_module, _bytecode, _ignore}, env) do
     module = env.module
+    Facts.put(module, {:module, module, env.file})
 
     for {name, arity} <- Module.definitions_in(module) do
       case Module.get_definition(module, {name, arity}) do
@@ -89,6 +94,26 @@ defmodule Fathom.Tracer do
 
       true ->
         :ok
+    end
+  end
+
+  # The compiler traces every `@on_definition` callback as it invokes it, with
+  # the env of the function being defined, so the call would land on that
+  # function. It runs from the module body instead. Elixir registers its own
+  # callback on every module, which would add one row per definition saying
+  # nothing about the program, so that one is not recorded at all.
+  @builtin_on_definition {Module, :compile_definition_attributes}
+
+  defp on_definition_call({mod, name} = callback, meta, env) do
+    cond do
+      callback not in Module.get_attribute(env.module, :on_definition, []) ->
+        record_call(:remote_function, {mod, name, 6}, meta, env)
+
+      callback == @builtin_on_definition ->
+        :ok
+
+      true ->
+        record_call(:remote_function, {mod, name, 6}, meta, %{env | function: nil})
     end
   end
 
