@@ -123,3 +123,17 @@ defmodule SampleApp.Web do
     quote do: unquote(template)
   end
 end
+
+defmodule SampleApp.DefinitionHook do
+  @moduledoc "An `@on_definition` callback, which the compiler runs once per definition."
+
+  def on_def(_env, _kind, _name, _args, _guards, _body), do: :ok
+end
+
+defmodule SampleApp.Hooked do
+  @moduledoc "A module whose definitions each trigger a compile-time callback."
+
+  @on_definition {SampleApp.DefinitionHook, :on_def}
+
+  def hooked(arg), do: arg
+end

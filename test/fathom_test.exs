@@ -108,6 +108,18 @@ defmodule FathomTest do
              ]
     end
 
+    test "does not record the compiler's own per-definition callback" do
+      assert one("""
+             SELECT count(*) FROM calls WHERE callee = 'Module.compile_definition_attributes/6'
+             """) == 0
+    end
+
+    test "attributes an @on_definition callback to the module body, not the function" do
+      assert column("""
+             SELECT caller FROM calls WHERE callee = 'SampleApp.DefinitionHook.on_def/6'
+             """) == ["SampleApp.Hooked.__compile__/0"]
+    end
+
     test "attributes references in a module body to the compile-time pseudo-function" do
       assert one("""
              SELECT count(*) FROM calls WHERE caller LIKE '%.__compile__/0'
