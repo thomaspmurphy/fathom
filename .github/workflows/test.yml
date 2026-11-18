@@ -1,0 +1,43 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - elixir: "1.19.5"
+            otp: "28.3.1"
+          - elixir: "1.20.5"
+            otp: "29.1.2"
+    name: Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ matrix.elixir }}
+          otp-version: ${{ matrix.otp }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+            fixtures/sample_app/deps
+            fixtures/sample_app/_build
+          key: mix-${{ matrix.otp }}-${{ matrix.elixir }}-${{ hashFiles('mix.lock', 'fixtures/sample_app/mix.lock') }}
+
+      - run: mix deps.get
+
+      # The tests build the sample app with `mix fathom.build`, so it needs its own deps.
+      - run: mix deps.get
+        working-directory: fixtures/sample_app
+
+      - run: mix test
