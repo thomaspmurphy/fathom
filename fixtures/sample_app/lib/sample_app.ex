@@ -137,3 +137,11 @@ defmodule SampleApp.Hooked do
 
   def hooked(arg), do: arg
 end
+
+defmodule SampleApp.Namespace do
+  defmodule Inner do
+    @moduledoc false
+
+    def inner, do: :inner
+  end
+end

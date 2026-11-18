@@ -54,6 +54,7 @@ defmodule Fathom.Tracer do
 
   def trace({:on_module, _bytecode, _ignore}, env) do
     module = env.module
+    Facts.put(module, {:module, module, env.file})
 
     for {name, arity} <- Module.definitions_in(module) do
       case Module.get_definition(module, {name, arity}) do

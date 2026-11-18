@@ -268,5 +268,14 @@ defmodule FathomTest do
       assert meta["project"] == "sample_app"
       assert meta["elixir_version"] == System.version()
     end
+
+    test "counts the same modules as the modules table, including ones defining nothing" do
+      module_count = one("SELECT value FROM meta WHERE key = 'module_count'")
+
+      assert String.to_integer(module_count) == one("SELECT count(*) FROM modules")
+
+      assert one("SELECT file FROM modules WHERE module = 'SampleApp.Namespace'") ==
+               "lib/sample_app.ex"
+    end
   end
 end
