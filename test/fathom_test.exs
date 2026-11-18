@@ -226,7 +226,8 @@ defmodule FathomTest do
     test "records routes with the action behind them" do
       assert query("SELECT verb, path, plug, action FROM routes ORDER BY path, verb") == [
                ["get", "/accounts", "SampleApp.AccountController", "index"],
-               ["delete", "/accounts/:id", "SampleApp.AccountController", "delete"]
+               ["delete", "/accounts/:id", "SampleApp.AccountController", "delete"],
+               ["get", "/docs", "SampleApp.DocsPlug", nil]
              ]
     end
 

@@ -191,13 +191,18 @@ defmodule Fathom.Introspect do
         Facts.put(
           module,
           {:route, module, to_string(route.verb), route.path, inspect(route.plug),
-           to_string(route.plug_opts), route_helper(route)}
+           route_action(route.plug_opts), route_helper(route)}
         )
       end)
     else
       :ok
     end
   end
+
+  # A controller route's plug_opts is its action, but a plain `get "/x", SomePlug, opts`
+  # route carries whatever opts it was given, so there is no action to record.
+  defp route_action(action) when is_atom(action), do: Atom.to_string(action)
+  defp route_action(_opts), do: nil
 
   defp route_helper(%{helper: helper}) when is_binary(helper), do: helper
   defp route_helper(_), do: nil

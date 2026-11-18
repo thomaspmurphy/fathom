@@ -60,6 +60,13 @@ defmodule SampleApp.Router do
         plug: SampleApp.AccountController,
         plug_opts: :delete,
         helper: "account"
+      },
+      %{
+        verb: :get,
+        path: "/docs",
+        plug: SampleApp.DocsPlug,
+        plug_opts: [path: "/api/openapi"],
+        helper: nil
       }
     ]
   end
