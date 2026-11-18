@@ -147,6 +147,16 @@ defmodule FathomTest do
              )
     end
 
+    test "keeps distinct sites that a `use` collapses onto one line" do
+      # Three real sites, not one recorded three times, so the rows must stay.
+      use_line = one("SELECT line FROM use_sites WHERE module = 'SampleApp.InjectedTask'")
+
+      assert query("""
+             SELECT kind, line FROM dynamic_sites
+             WHERE caller = 'SampleApp.InjectedTask.prepare/1'
+             """) == List.duplicate(["dynamic_module", use_line], 3)
+    end
+
     test "does not mistake map field access for a dynamic call" do
       refute "SampleApp.Dispatcher.static_field_access/1" in column(
                "SELECT caller FROM dynamic_sites"

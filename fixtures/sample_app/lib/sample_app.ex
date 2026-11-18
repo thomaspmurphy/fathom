@@ -145,3 +145,28 @@ defmodule SampleApp.Namespace do
     def inner, do: :inner
   end
 end
+
+defmodule SampleApp.TaskInjector do
+  @moduledoc """
+  Injects a function with three dynamic dispatch sites. Quoted code carries no
+  lines of its own, so all three land on the line of the `use`.
+  """
+
+  defmacro __using__(_opts) do
+    quote do
+      def prepare(children) do
+        Enum.each(children, & &1.start_link([]))
+
+        Enum.each(children, fn
+          {module, opts} -> module.start_link(opts)
+          module -> module.start_link([])
+        end)
+      end
+    end
+  end
+end
+
+defmodule SampleApp.InjectedTask do
+  @moduledoc false
+  use SampleApp.TaskInjector
+end
