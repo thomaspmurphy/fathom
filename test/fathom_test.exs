@@ -270,6 +270,12 @@ defmodule FathomTest do
 
       assert endpoints == ["/accounts/:id"]
     end
+
+    test "the guide's endpoint query finds a table named without a struct literal" do
+      [sql] = Regex.run(~r/WITH RECURSIVE reach.*?;/s, Fathom.Guide.section(db_path()))
+
+      assert query(String.replace(sql, "'applications'", "'accounts'")) == [["get", "/accounts"]]
+    end
   end
 
   describe "metadata" do

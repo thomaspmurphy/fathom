@@ -77,7 +77,8 @@ defmodule SampleApp.AccountController do
 
   alias SampleApp.Accounts
 
-  def index(conn, _params), do: conn
+  # Names the schema the way query code does, without building the struct.
+  def index(conn, _params), do: Map.put(conn, :schema, SampleApp.Schemas.Account)
 
   def delete(conn, _params) do
     Accounts.purge_users()
